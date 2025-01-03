@@ -78,18 +78,44 @@ def stations():
     stations_list = [station[0] for station in stations_data]
     return jsonify(stations_list)
 
-# TOBS route
 @app.route("/api/v1.0/tobs")
 def tobs():
     """Return temperature observations for the previous year."""
     session = Session(engine)
-    # Find the most active station
-    most_active_station = (
-        session.query(Measurement.station)
-        .group_by(Measurement.station)
-        .order_by(func.count(Measurement.station).desc())
-        .first()
-    )[0]
+    
+    try:
+        # Get the most active station
+        most_active_station = (
+            session.query(Measurement.station)
+            .group_by(Measurement.station)
+            .order_by(func.count(Measurement.station).desc())
+            .first()
+        )[0]
+        
+        # Get the latest date and calculate the date one year ago
+        latest_date = session.query(func.max(Measurement.date)).scalar()
+        year_ago = pd.to_datetime(latest_date) - pd.DateOffset(years=1)
+        year_ago = year_ago.strftime("%Y-%m-%d")
+        
+        # Query temperature observations for the most active station in the last 12 months
+        tobs_data = (
+            session.query(Measurement.date, Measurement.tobs)
+            .filter(Measurement.station == most_active_station)
+            .filter(Measurement.date >= year_ago)
+            .all()
+        )
+        session.close()
+
+        # Convert query results to a list of dictionaries
+        tobs_list = [{"date": date, "tobs": tobs} for date, tobs in tobs_data]
+        
+        # Return the JSON-serializable list
+        return jsonify(tobs_list)
+    
+    except Exception as e:
+        session.close()
+        return jsonify({"error": str(e)}), 500
+
     # Find the most recent date and calculate one year back
     latest_date = session.query(func.max(Measurement.date)).scalar()
     year_ago = pd.to_datetime(latest_date) - pd.DateOffset(years=1)
@@ -106,21 +132,36 @@ def tobs():
     # Return the data as JSON
     return jsonify(tobs_data)
 
-# Start route
 @app.route("/api/v1.0/<start>")
 def start_date(start):
     """Return min, avg, and max temperatures from the start date."""
     session = Session(engine)
-    temps = (
-        session.query(
-            func.min(Measurement.tobs),
-            func.avg(Measurement.tobs),
-            func.max(Measurement.tobs),
+    try:
+        # Query min, avg, and max temperatures from the start date
+        temps = (
+            session.query(
+                func.min(Measurement.tobs),
+                func.avg(Measurement.tobs),
+                func.max(Measurement.tobs),
+            )
+            .filter(Measurement.date >= start)
+            .all()
         )
-        .filter(Measurement.date >= start)
-        .all()
-    )
-    session.close()
+        session.close()
+
+        # Convert result to JSON-serializable format
+        temps_dict = {
+            "start_date": start,
+            "TMIN": temps[0][0],
+            "TAVG": temps[0][1],
+            "TMAX": temps[0][2],
+        }
+
+        return jsonify(temps_dict)
+
+    except Exception as e:
+        session.close()
+        return jsonify({"error": str(e)}), 500
 
     # Return the results as JSON
     return jsonify({"start_date": start, "temps": temps[0]})
@@ -148,3 +189,4 @@ def start_end_date(start, end):
 # Run the application
 if __name__ == "__main__":
     app.run(debug=True)
+
